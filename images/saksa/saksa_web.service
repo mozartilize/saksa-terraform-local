@@ -1,0 +1,10 @@
+[Unit]
+Description=Saksa Web
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=uvicorn --factory saksa:create_app --host 0.0.0.0
+
+[Install]
+WantedBy=multi-user.target
