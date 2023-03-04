@@ -85,7 +85,7 @@ resource "docker_container" "tf_saksa__scylla" {
     interpreter = [
       "podman", "exec", self.name, "bash", "-c"
     ]
-    command = "scylla_io_setup; systemctl start scylla-server"
+    command = "scylla_io_setup; systemctl enable --now scylla-server"
   }
 
   upload {
@@ -115,7 +115,104 @@ resource "docker_container" "tf_saksa__scylla" {
   }
 }
 
+resource "docker_container" "tf_saksa__connect" {
+  count = 1
+  name  = "tf_saksa__connect${count.index+1}"
+  image = docker_image.tf_connect_vm.image_id
+  networks_advanced {
+    name = docker_network.tf_saksa.id
+    ipv4_address = "10.89.2.8${count.index+1}"
+  }
+
+  provisioner "local-exec" {
+    interpreter = [
+      "podman", "exec", self.name, "bash", "-c"
+    ]
+    command = "systemctl enable --now confluent-kafka-connect; sleep 1; curl -X PUT -H \"Content-Type: application/json\" --data @/etc/kafka/scylla-connector.json http://localhost:8083/connectors/ScyllaConnector/config"
+  }
+
+  upload {
+    file = "/etc/kafka/connect-distributed.properties"
+    content = templatefile("${path.root}/modules/kafka-connect/connect-distributed.properties.tpl", {
+      kafka_bootstrap_servers = "${docker_container.tf_saksa__redpanda[0].network_data[0].ip_address}",
+    })
+  }
+
+  upload {
+    file = "/etc/kafka/scylla-connector.json"
+    content = templatefile("${path.root}/modules/kafka-connect/scylla-connector.json.tpl", {
+      scylla_cluster_addresses = "${docker_container.tf_saksa__scylla[0].network_data[0].ip_address}",
+    })
+  }
+
+  cgroupns_mode = "host"
+  network_mode = "bridge"
+  pid_mode = "private"
+  tmpfs = {
+    "/tmp": "",
+    "/run": "",
+    "/run/lock": "",
+  }
+  volumes {
+    host_path = "/sys/fs/cgroup"
+    container_path = "/sys/fs/cgroup"
+  }
+  volumes {
+    host_path = "/var/log/journal"
+    container_path = "/var/log/journal"
+  }
+}
+
+resource "docker_container" "tf_saksa__nginx" {
+  name  = "tf_saksa__web"
+  image = docker_image.tf_nginx_vm.image_id
+
+  provisioner "local-exec" {
+    interpreter = [
+      "podman", "exec", self.name, "bash", "-c"
+    ]
+    command = "systemctl enable --now nginx"
+  }
+
+  upload {
+    file = "/etc/nginx/site-availables/saksa.conf"
+    content = templatefile("${path.root}/modules/nginx/saksa.conf.tpl", {
+      server1 = "${docker_container.tf_saksa__web[0].network_data[0].ip_address}",
+    })
+  }
+
+  ports {
+    internal = 80
+    external = 8080
+  }
+
+  networks_advanced {
+    name = docker_network.tf_saksa.id
+  }
+  network_mode = "bridge"
+  pid_mode = "private"
+  cgroupns_mode = "host"
+  tmpfs = {
+    "/tmp": "",
+    "/run": "",
+    "/run/lock": "",
+  }
+  volumes {
+    host_path = "/sys/fs/cgroup"
+    container_path = "/sys/fs/cgroup"
+  }
+  volumes {
+    host_path = "/var/log/journal"
+    container_path = "/var/log/journal"
+  }
+  volumes {
+    container_path = "/var/lib/saksa"
+    volume_name = docker_volume.tf_saksa_web.name
+  }
+}
+
 resource "docker_container" "tf_saksa__web" {
+  count = 1
   name  = "tf_saksa__web"
   image = docker_image.tf_saksa_vm.image_id
 
@@ -123,7 +220,12 @@ resource "docker_container" "tf_saksa__web" {
     interpreter = [
       "podman", "exec", self.name, "bash", "-c"
     ]
-    command = "echo foo >> /etc/saksa/.env"
+    command = "systemctl enable --now saksa-web"
+  }
+
+  upload {
+    file = "/etc/systemd/system/saksa-web.service"
+    content = file("${path.root}/modules/saksa/saksa-web.service")
   }
 
   upload {
@@ -186,11 +288,20 @@ resource "docker_volume" "tf_saksa_redpanda" {
 }
 
 # images
+resource "docker_image" "tf_nginx_vm" {
+  name = "tf_nginx_vm"
+  keep_locally = true
+  build {
+    context = "modules/nginx"
+    tag     = ["tf_nginx_vm:develop"]
+  }
+}
+
 resource "docker_image" "tf_saksa_vm" {
   name = "tf_saksa_vm"
   keep_locally = true
   build {
-    context = "images/saksa"
+    context = "modules/saksa"
     tag     = ["tf_saksa_vm:develop"]
   }
 }
@@ -199,7 +310,7 @@ resource "docker_image" "tf_bastion_vm" {
   name = "tf_bastion_vm"
   keep_locally = true
   build {
-    context = "images/bastion"
+    context = "modules/bastion"
     tag     = ["tf_bastion_vm:develop"]
   }
 }
