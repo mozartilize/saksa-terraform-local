@@ -39,18 +39,22 @@ resource "docker_container" "tf_saksa__bastion" {
 
 resource "docker_container" "tf_saksa__redpanda" {
   count = 1
-  name  = "tf_saksa__redpanda"
+  name  = "tf_saksa__redpanda${count.index+1}"
   image = docker_image.tf_redpanda_vm.image_id
   networks_advanced {
     name = docker_network.tf_saksa.id
     ipv4_address = "10.89.2.7${count.index+1}"
+  }
+  volumes {
+    container_path = "/var/lib/redpanda/data"
+    volume_name = docker_volume.tf_saksa_redpanda[count.index].name
   }
 
   provisioner "local-exec" {
     interpreter = [
       "podman", "exec", self.name, "bash", "-c"
     ]
-    command = "rpk redpanda mode production; rpk redpanda config bootstrap --self ${self.network_data[0].ip_address} --ips 10.89.2.71; systemctl start redpanda"
+    command = "rpk redpanda mode production; rpk redpanda config bootstrap --self ${self.network_data[0].ip_address} --ips 10.89.2.71; systemctl enable --now redpanda"
   }
 
   network_mode = "bridge"
@@ -79,6 +83,10 @@ resource "docker_container" "tf_saksa__scylla" {
   networks_advanced {
     name = docker_network.tf_saksa.id
     ipv4_address = "10.89.2.5${count.index+1}"
+  }
+  volumes {
+    container_path = "/var/lib/scylla"
+    volume_name = docker_volume.tf_saksa_scylla[count.index].name
   }
 
   provisioner "local-exec" {
@@ -128,7 +136,7 @@ resource "docker_container" "tf_saksa__connect" {
     interpreter = [
       "podman", "exec", self.name, "bash", "-c"
     ]
-    command = "systemctl enable --now confluent-kafka-connect; sleep 1; curl -X PUT -H \"Content-Type: application/json\" --data @/etc/kafka/scylla-connector.json http://localhost:8083/connectors/ScyllaConnector/config"
+    command = "systemctl enable --now confluent-kafka-connect"
   }
 
   upload {
@@ -164,18 +172,18 @@ resource "docker_container" "tf_saksa__connect" {
 }
 
 resource "docker_container" "tf_saksa__nginx" {
-  name  = "tf_saksa__web"
+  name  = "tf_saksa__nginx"
   image = docker_image.tf_nginx_vm.image_id
 
   provisioner "local-exec" {
     interpreter = [
       "podman", "exec", self.name, "bash", "-c"
     ]
-    command = "systemctl enable --now nginx"
+    command = "ln -s /etc/nginx/sites-available/saksa.conf /etc/nginx/sites-enabled/saksa.conf; systemctl enable --now nginx"
   }
 
   upload {
-    file = "/etc/nginx/site-availables/saksa.conf"
+    file = "/etc/nginx/sites-available/saksa.conf"
     content = templatefile("${path.root}/modules/nginx/saksa.conf.tpl", {
       server1 = "${docker_container.tf_saksa__web[0].network_data[0].ip_address}",
     })
@@ -288,6 +296,15 @@ resource "docker_volume" "tf_saksa_redpanda" {
 }
 
 # images
+resource "docker_image" "tf_connect_vm" {
+  name = "tf_connect_vm"
+  keep_locally = true
+  build {
+    context = "modules/kafka-connect"
+    tag     = ["tf_connect_vm:develop"]
+  }
+}
+
 resource "docker_image" "tf_nginx_vm" {
   name = "tf_nginx_vm"
   keep_locally = true
@@ -316,7 +333,7 @@ resource "docker_image" "tf_bastion_vm" {
 }
 
 resource "docker_image" "tf_redpanda_vm" {
-  name = "tf_scylla_vmtf_bastion_vm"
+  name = "tf_redpanda_vm"
   keep_locally = true
   build {
     context = "modules/redpanda"
@@ -325,7 +342,7 @@ resource "docker_image" "tf_redpanda_vm" {
 }
 
 resource "docker_image" "tf_scylla_vm" {
-  name = "tf_scylla_vmtf_bastion_vm"
+  name = "tf_scylla_vm"
   keep_locally = true
   build {
     context = "modules/scylla"
